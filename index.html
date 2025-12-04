@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>手势控制粒子系统</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: radial-gradient(circle at center, #0b0f1a, #000);
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #fff;
+    }
+
+    #ui {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      z-index: 10;
+      background: rgba(20, 25, 40, 0.7);
+      backdrop-filter: blur(10px);
+      border-radius: 14px;
+      padding: 12px 14px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    select, input, button {
+      background: #1e2438;
+      border: 1px solid #3a3f5a;
+      color: white;
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+
+    #fullscreenBtn {
+      position: fixed;
+      left: 20px;
+      top: 90px;
+      z-index: 10;
+    }
+
+    #tip {
+      position: fixed;
+      bottom: 20px;
+      width: 100%;
+      text-align: center;
+      font-size: 13px;
+      opacity: 0.7;
+    }
+
+    canvas {
+      display: block;
+    }
+
+    #startBtn {
+      position: fixed;
+      inset: 0;
+      margin: auto;
+      width: 170px;
+      height: 54px;
+      font-size: 17px;
+      border-radius: 14px;
+      border: none;
+      background: linear-gradient(135deg,#6ea8ff,#4760ff);
+      color: white;
+      z-index: 9999;
+    }
+
+    video {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+
+<button id="startBtn">开始体验</button>
+
+<div id="ui">
+  <select id="shapeSelect">
+    <option value="heart">爱心</option>
+    <option value="flower">花朵</option>
+    <option value="star">星星</option>
+    <option value="firework">烟花</option>
+  </select>
+
+  <input type="color" id="colorPicker" value="#ff4fd8">
+</div>
+
+<button id="fullscreenBtn">全屏</button>
+
+<div id="tip">双手拇指与食指：靠近 → 收缩 ｜ 分开 → 扩散</div>
+
+<video id="video" autoplay playsinline muted></video>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<script>
+  let scene = new THREE.Scene();
+  let camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
+  let renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+
+  renderer.setSize(innerWidth, innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  camera.position.z = 80;
+
+  let particles, geometry, material;
+  let targetScale = 1;
+
+  function createParticles(color) {
+    if (particles) scene.remove(particles);
+
+    geometry = new THREE.BufferGeometry();
+    let positions = [];
+
+    for (let i = 0; i < 2000; i++) {
+      positions.push(
+        (Math.random() - 0.5) * 50,
+        (Math.random() - 0.5) * 50,
+        (Math.random() - 0.5) * 50
+      );
+    }
+
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    material = new THREE.PointsMaterial({
+      color,
+      size: 0.8
+    });
+
+    particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+  }
+
+  createParticles(document.getElementById("colorPicker").value);
+
+  function animate() {
+    requestAnimationFrame(animate);
+    if (particles) {
+      particles.rotation.y += 0.002;
+      particles.scale.setScalar(targetScale);
+    }
+    renderer.render(scene, camera);
+  }
+
+  animate();
+
+  window.onresize = () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  };
+
+  document.getElementById("fullscreenBtn").onclick = () => {
+    if (!document.fullscreenElement) {
+      document.body.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  };
+
+  document.getElementById("colorPicker").oninput = e => {
+    material.color.set(e.target.value);
+  };
+
+  // ===== MediaPipe Hands 手势系统 =====
+
+  const video = document.getElementById('video');
+
+  const hands = new Hands({
+    locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 2,
+    minDetectionConfidence: 0.6,
+    minTrackingConfidence: 0.6
+  });
+
+  hands.onResults(results => {
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      let p1 = results.multiHandLandmarks[0][4];
+      let p2 = results.multiHandLandmarks[0][8];
+      let dx = p1.x - p2.x;
+      let dy = p1.y - p2.y;
+      let dist = Math.sqrt(dx * dx + dy * dy);
+
+      targetScale = THREE.MathUtils.clamp(dist * 5, 0.3, 3);
+    }
+  });
+
+  const cameraMp = new Camera(video, {
+    onFrame: async () => {
+      await hands.send({ image: video });
+    },
+    width: 640,
+    height: 480
+  });
+
+  // ✅ iPad 黑屏核心修复：必须由用户点击触发
+  document.getElementById("startBtn").onclick = async () => {
+    try {
+      await cameraMp.start();
+      document.getElementById("startBtn").style.display = "none";
+    } catch (e) {
+      alert("摄像头启动失败：" + e.message);
+    }
+  };
+</script>
+
+</body>
+</html>
