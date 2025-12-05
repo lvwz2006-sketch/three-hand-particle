@@ -2,15 +2,33 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
-  <title>手势控制粒子系统</title>
+  <title>哈利·波特与怪奇物语：施法粒子</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body {
       margin: 0;
       overflow: hidden;
-      background: radial-gradient(circle at center, #0b0f1a, #000);
+      background: radial-gradient(circle at center, #0a0a0d, #000); 
       font-family: -apple-system, BlinkMacSystemFont, sans-serif;
       color: #fff;
+    }
+
+    body::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 100 100"><filter id="n" x="0" y="0" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.005" numOctaves="1" result="f"></feTurbulence><feColorMatrix type="matrix" values="0 0 0 0 0, 0 0 0 0 0, 0 0 0 0 0, 0 0 0 0.1 0"></feColorMatrix></filter><rect width="100%" height="100%" filter="url(%23n)"></rect></svg>');
+      opacity: 0.1;
+      animation: noise-anim 10s infinite alternate linear;
+      pointer-events: none;
+    }
+
+    @keyframes noise-anim {
+      0% { transform: translate(0, 0); }
+      100% { transform: translate(100%, 100%); }
     }
 
     #ui {
@@ -51,6 +69,13 @@
       font-size: 13px;
       opacity: 0.7;
     }
+    
+    #tip span {
+        display: block;
+        margin-top: 5px;
+        font-size: 11px;
+        color: #aaa;
+    }
 
     canvas {
       display: block;
@@ -73,6 +98,26 @@
     video {
       display: none;
     }
+
+    #spellText {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 4em;
+      font-weight: bold;
+      color: #ffd700;
+      text-shadow: 0 0 20px rgba(255, 215, 0, 0.8), 0 0 10px rgba(255, 215, 0, 0.5);
+      opacity: 0;
+      transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+      pointer-events: none;
+      z-index: 11;
+      white-space: nowrap;
+    }
+    .spell-active {
+        opacity: 1 !important;
+        transform: translate(-50%, -50%) scale(1.1);
+    }
   </style>
 </head>
 
@@ -82,24 +127,33 @@
 
 <div id="ui">
   <select id="shapeSelect">
+    <option value="default">默认星云</option>
     <option value="heart">爱心</option>
     <option value="flower">花朵</option>
     <option value="star">星星</option>
     <option value="firework">烟花</option>
+    <option value="deathlyHallows">死亡圣器</option>
+    <option value="lightningScar">闪电疤痕</option>
   </select>
 
-  <input type="color" id="colorPicker" value="#ff4fd8">
+  <input type="color" id="colorPicker" value="#FFD700">
 </div>
 
 <button id="fullscreenBtn">全屏</button>
 
-<div id="tip">双手拇指与食指：靠近 → 收缩 ｜ 分开 → 扩散</div>
+<div id="tip">
+    双手拇指与食指：靠近 → 收缩 ｜ 分开 → 扩散
+    <span>双手掌心：靠近 → 斥力 (怪奇物语能量冲击) ｜ 分开 → 引力 (怪奇物语能量场)</span>
+    <span>单手张开并移动：施展咒语 (哈利·波特魔法火花)</span>
+</div>
 
+<div id="spellText"></div> 
 <video id="video" autoplay playsinline muted></video>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.150.1/build/three.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<audio id="spellSound" src="spell.mp3" preload="auto"></audio> 
+
+<script src="./three.min.js"></script>
+<script src="./hands.min.js"></script>
 
 <script>
   let scene = new THREE.Scene();
@@ -112,39 +166,284 @@
   camera.position.z = 80;
 
   let particles, geometry, material;
+  let particlePositions;
   let targetScale = 1;
+  let particleColor = new THREE.Color(document.getElementById("colorPicker").value);
+  let originalParticleColor = particleColor.clone(); 
 
-  function createParticles(color) {
+  let handCenters = []; 
+  let forceFactor = 0.05; 
+  let repulsionThreshold = 30; 
+
+  let spellParticles = [];
+  let spellParticleMaterial;
+  let lastHandPosition = new THREE.Vector3(); 
+  let isCastingSpell = false;
+  let spellCooldown = 0;
+  const SPELL_COOLDOWN_TIME = 120; 
+
+  const spells = [
+    "Expelliarmus! (除你武器！)",
+    "Lumos! (荧光闪烁！)",
+    "Alohomora! (阿拉霍洞开！)",
+    "Wingardium Leviosa! (羽加迪姆 勒维奥萨！)",
+    "Expecto Patronum! (呼神护卫！)",
+    "Avada Kedavra! (阿瓦达索命！ - 仅供效果展示，请勿误用)"
+  ];
+  const spellSound = document.getElementById('spellSound');
+
+
+  // 粒子形状生成函数 (为简洁省略，内容与您上次提供的代码一致)
+  function generateShapePositions(shapeName, count, scale = 1) {
+    let positions = [];
+    switch (shapeName) {
+      case 'heart':
+        for (let i = 0; i < count; i++) {
+          let t = Math.random() * 2 * Math.PI;
+          let x = 16 * Math.pow(Math.sin(t), 3) * scale;
+          let y = (13 * Math.cos(t) - 5 * Math.cos(2 * t) - 2 * Math.cos(3 * t) - Math.cos(4 * t)) * scale;
+          positions.push(x, y, (Math.random() - 0.5) * 5);
+        }
+        break;
+      case 'flower':
+        for (let i = 0; i < count; i++) {
+          let t = Math.random() * 2 * Math.PI;
+          let r = 20 * (1 + 0.8 * Math.sin(6 * t)) * scale;
+          let x = r * Math.cos(t);
+          let y = r * Math.sin(t);
+          positions.push(x, y, (Math.random() - 0.5) * 5);
+        }
+        break;
+      case 'star':
+        for (let i = 0; i < count; i++) {
+          let t = Math.random() * 2 * Math.PI;
+          let r = (20 + Math.random() * 10) * scale;
+          let x = r * Math.cos(t);
+          let y = r * Math.sin(t);
+          positions.push(x, y, (Math.random() - 0.5) * 5);
+        }
+        break;
+      case 'firework':
+        for (let i = 0; i < count; i++) {
+          let x = (Math.random() - 0.5) * 60;
+          let y = (Math.random() - 0.5) * 60;
+          let z = (Math.random() - 0.5) * 60;
+          positions.push(x, y, z);
+        }
+        break;
+      case 'deathlyHallows':
+        for (let i = 0; i < count; i++) {
+          let x, y, z;
+          if (Math.random() < 0.3) {
+            let a = Math.random();
+            let b = Math.random();
+            if (a + b > 1) { a = 1 - a; b = 1 - b; }
+            x = (a * (-20) + b * 20 + (1 - a - b) * 0) * scale;
+            y = (a * (-15) + b * (-15) + (1 - a - b) * 15) * scale;
+          } else if (Math.random() < 0.6) {
+            let angle = Math.random() * 2 * Math.PI;
+            x = Math.cos(angle) * 8 * scale;
+            y = Math.sin(angle) * 8 * scale - 5 * scale;
+          } else {
+            x = 0;
+            y = (Math.random() - 0.5) * 20 * scale;
+          }
+          z = (Math.random() - 0.5) * 2 * scale;
+          positions.push(x, y, z);
+        }
+        break;
+      case 'lightningScar':
+        for (let i = 0; i < count; i++) {
+          let p = Math.random();
+          let x, y;
+          if (p < 0.33) {
+            x = THREE.MathUtils.lerp(-10, 0, p * 3) * scale;
+            y = THREE.MathUtils.lerp(0, 10, p * 3) * scale;
+          } else if (p < 0.66) {
+            p = (p - 0.33) * 3;
+            x = THREE.MathUtils.lerp(0, 10, p) * scale;
+            y = THREE.MathUtils.lerp(10, -10, p) * scale;
+          } else {
+            p = (p - 0.66) * 3;
+            x = THREE.MathUtils.lerp(10, 20, p) * scale;
+            y = THREE.MathUtils.lerp(-10, 0, p) * scale;
+          }
+          positions.push(x, y, (Math.random() - 0.5) * 2 * scale);
+        }
+        break;
+      case 'default':
+      default:
+        for (let i = 0; i < count; i++) {
+          positions.push(
+            (Math.random() - 0.5) * 50,
+            (Math.random() - 0.5) * 50,
+            (Math.random() - 0.5) * 50
+          );
+        }
+        break;
+    }
+    return positions;
+  }
+  
+  function createParticles(shapeName, color) {
     if (particles) scene.remove(particles);
 
     geometry = new THREE.BufferGeometry();
-    let positions = [];
+    const count = 2000;
+    particlePositions = new Float32Array(generateShapePositions(shapeName, count, 0.8));
+    let currentPositions = new Float32Array(particlePositions);
 
-    for (let i = 0; i < 2000; i++) {
-      positions.push(
-        (Math.random() - 0.5) * 50,
-        (Math.random() - 0.5) * 50,
-        (Math.random() - 0.5) * 50
-      );
-    }
-
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(currentPositions, 3));
+    
     material = new THREE.PointsMaterial({
-      color,
-      size: 0.8
+      color: color,
+      size: 0.8,
+      transparent: true,
+      opacity: 0.9,
+      blending: THREE.AdditiveBlending
     });
 
     particles = new THREE.Points(geometry, material);
     scene.add(particles);
+    particleColor.set(color); 
+    originalParticleColor.set(color); 
   }
 
-  createParticles(document.getElementById("colorPicker").value);
+  createParticles(document.getElementById("shapeSelect").value, document.getElementById("colorPicker").value);
+
+  spellParticleMaterial = new THREE.PointsMaterial({
+      color: 0xFFF0B0, 
+      size: 1.5,
+      transparent: true,
+      opacity: 0.8,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false 
+  });
+
+  function createSpellParticles(position) {
+      const spellGeometry = new THREE.BufferGeometry();
+      const spellPositions = [];
+      const spellLifetimes = [];
+      const numSpellParticles = 50;
+
+      for (let i = 0; i < numSpellParticles; i++) {
+          spellPositions.push(
+              position.x + (Math.random() - 0.5) * 5,
+              position.y + (Math.random() - 0.5) * 5,
+              position.z + (Math.random() - 0.5) * 5
+          );
+          spellLifetimes.push(Math.random() * 60 + 30);
+      }
+      spellGeometry.setAttribute('position', new THREE.Float32BufferAttribute(spellPositions, 3));
+      spellGeometry.setAttribute('lifetime', new THREE.Float32BufferAttribute(spellLifetimes, 1)); 
+
+      const newSpellParticles = new THREE.Points(spellGeometry, spellParticleMaterial.clone());
+      newSpellParticles.name = 'spellEffect'; 
+      scene.add(newSpellParticles);
+      spellParticles.push(newSpellParticles);
+  }
+
 
   function animate() {
     requestAnimationFrame(animate);
+
+    if (spellCooldown > 0) {
+        spellCooldown--;
+    }
+
+    if (particles && particlePositions && handCenters.length > 0) {
+      let currentPositions = geometry.attributes.position.array;
+      let tempVector = new THREE.Vector3();
+
+      for (let i = 0; i < particlePositions.length; i += 3) {
+        tempVector.set(currentPositions[i], currentPositions[i+1], currentPositions[i+2]);
+        
+        handCenters.forEach(handCenter => {
+          let dx = tempVector.x - handCenter.x;
+          let dy = tempVector.y - handCenter.y;
+          let dz = tempVector.z - handCenter.z;
+          let distSq = dx*dx + dy*dy + dz*dz;
+          let dist = Math.sqrt(distSq);
+
+          if (dist > 0) {
+            dx /= dist; dy /= dist; dz /= dist;
+          } else { 
+            dx = Math.random() - 0.5; dy = Math.random() - 0.5; dz = Math.random() - 0.5;
+            let len = Math.sqrt(dx*dx+dy*dy+dz*dz);
+            dx /= len; dy /= len; dz /= len;
+          }
+          
+          let forceStrength = 0;
+          if (handCenters.length > 1) { 
+              if (handCenter.distToOtherHand < repulsionThreshold) { 
+                  forceStrength = forceFactor * 10 / (distSq + 1); 
+              } else { 
+                  forceStrength = -forceFactor * 5 / (distSq + 1); 
+              }
+          } else { 
+             forceStrength = -forceFactor * 0.5 / (distSq + 1); 
+          }
+          
+          currentPositions[i] += dx * forceStrength;
+          currentPositions[i+1] += dy * forceStrength;
+          currentPositions[i+2] += dz * forceStrength;
+        });
+
+        currentPositions[i] += (particlePositions[i] - currentPositions[i]) * 0.01;
+        currentPositions[i+1] += (particlePositions[i+1] - currentPositions[i+1]) * 0.01;
+        currentPositions[i+2] += (particlePositions[i+2] - currentPositions[i+2]) * 0.01;
+      }
+      geometry.attributes.position.needsUpdate = true;
+    }
+
+
+    for (let i = spellParticles.length - 1; i >= 0; i--) {
+        const sp = spellParticles[i];
+        const lifetimes = sp.geometry.attributes.lifetime.array;
+        const positions = sp.geometry.attributes.position.array;
+        const opacities = sp.material.opacity;
+
+        let allDead = true;
+        for (let j = 0; j < lifetimes.length; j++) {
+            lifetimes[j]--;
+            if (lifetimes[j] > 0) {
+                allDead = false;
+                positions[j*3+1] += 0.2; 
+                positions[j*3] += (Math.random() - 0.5) * 0.5; 
+                positions[j*3+2] += (Math.random() - 0.5) * 0.5; 
+            } else {
+                positions[j*3] = positions[j*3+1] = positions[j*3+2] = 10000; 
+            }
+        }
+        sp.geometry.attributes.position.needsUpdate = true;
+        
+        if (allDead) {
+            scene.remove(sp);
+            spellParticles.splice(i, 1);
+        } else {
+            sp.material.opacity = Math.max(0, opacities * 0.95 - 0.01); 
+        }
+    }
+
+
     if (particles) {
       particles.rotation.y += 0.002;
       particles.scale.setScalar(targetScale);
+
+      if (handCenters.length === 2) {
+          let distBetweenHands = handCenters[0].distanceTo(handCenters[1]);
+          if (distBetweenHands < repulsionThreshold * 2) { 
+              let mixFactor = 1 - (distBetweenHands / (repulsionThreshold * 2));
+              material.color.lerpColors(originalParticleColor, new THREE.Color(0xAA0000), mixFactor * 0.7);
+              material.opacity = 0.8 + Math.sin(performance.now() * 0.1) * 0.15;
+          } else {
+              material.color.copy(originalParticleColor);
+              material.opacity = 0.9;
+          }
+      } else {
+          material.color.copy(originalParticleColor);
+          material.opacity = 0.9;
+      }
     }
     renderer.render(scene, camera);
   }
@@ -167,49 +466,129 @@
 
   document.getElementById("colorPicker").oninput = e => {
     material.color.set(e.target.value);
+    originalParticleColor.set(e.target.value);
+  };
+  
+  document.getElementById("shapeSelect").onchange = e => {
+    createParticles(e.target.value, document.getElementById("colorPicker").value);
   };
 
-  // ===== MediaPipe Hands 手势系统 =====
-
+  // ===== MediaPipe 手势识别 - 核心修改 =====
   const video = document.getElementById('video');
+  const spellTextElement = document.getElementById('spellText');
 
   const hands = new Hands({
-    locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
-  });
-
-  hands.setOptions({
     maxNumHands: 2,
     minDetectionConfidence: 0.6,
-    minTrackingConfidence: 0.6
+    minTrackingConfidence: 0.6,
+    // 🚀 关键修改：locateFile 必须指向本地文件路径！
+    locateFile: (file) => `./${file}` 
   });
 
   hands.onResults(results => {
+    handCenters = []; 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-      let p1 = results.multiHandLandmarks[0][4];
-      let p2 = results.multiHandLandmarks[0][8];
+      let p1 = results.multiHandLandmarks[0][4]; 
+      let p2 = results.multiHandLandmarks[0][8]; 
       let dx = p1.x - p2.x;
       let dy = p1.y - p2.y;
       let dist = Math.sqrt(dx * dx + dy * dy);
-
       targetScale = THREE.MathUtils.clamp(dist * 5, 0.3, 3);
+
+      results.multiHandLandmarks.forEach((handLandmarks, index) => {
+        let middleFingerBase = handLandmarks[9]; 
+        let x = (middleFingerBase.x - 0.5) * window.innerWidth / 10;
+        let y = -(middleFingerBase.y - 0.5) * window.innerHeight / 10;
+        let z = (middleFingerBase.z * 100 - 50) * 0.5; 
+        let handCenter3D = new THREE.Vector3(x, y, z);
+
+        if (results.multiHandLandmarks.length > 1) {
+            let otherHandIndex = index === 0 ? 1 : 0;
+            let otherHandBase = results.multiHandLandmarks[otherHandIndex][9];
+            let otherHandX = (otherHandBase.x - 0.5) * window.innerWidth / 10;
+            let otherHandY = -(otherHandBase.y - 0.5) * window.innerHeight / 10;
+            let otherHandZ = (otherHandBase.z * 100 - 50) * 0.5;
+            let otherHandCenter3D = new THREE.Vector3(otherHandX, otherHandY, otherHandZ);
+            handCenter3D.distToOtherHand = handCenter3D.distanceTo(otherHandCenter3D);
+        }
+        
+        handCenters.push(handCenter3D);
+
+        const indexTip = handLandmarks[8];
+        const middleTip = handLandmarks[12];
+        const ringTip = handLandmarks[16];
+        const pinkyTip = handLandmarks[20];
+        const wristPoint = handLandmarks[0];
+
+        // 简化后的张开手掌检测
+        const isHandOpen = 
+            indexTip.y < wristPoint.y * 0.8 &&
+            middleTip.y < wristPoint.y * 0.8 &&
+            ringTip.y < wristPoint.y * 0.8 &&
+            pinkyTip.y < wristPoint.y * 0.8 &&
+            dist > 0.1; 
+
+        let currentHandPosition = new THREE.Vector3(x, y, z);
+        let handSpeed = currentHandPosition.distanceTo(lastHandPosition);
+        lastHandPosition.copy(currentHandPosition);
+
+        if (isHandOpen && handSpeed > 3 && spellCooldown <= 0) { 
+            isCastingSpell = true;
+            spellCooldown = SPELL_COOLDOWN_TIME; 
+            castSpell(handCenter3D);
+        } else {
+            isCastingSpell = false;
+        }
+
+      });
     }
   });
 
-  const cameraMp = new Camera(video, {
-    onFrame: async () => {
-      await hands.send({ image: video });
-    },
-    width: 640,
-    height: 480
-  });
+  function castSpell(handPosition) {
+    if (spellSound) {
+        spellSound.currentTime = 0; 
+        spellSound.play().catch(e => console.log("Spell sound failed to play:", e)); 
+    }
+    createSpellParticles(handPosition); 
 
-  // ✅ iPad 黑屏核心修复：必须由用户点击触发
+    const randomSpell = spells[Math.floor(Math.random() * spells.length)];
+    spellTextElement.textContent = randomSpell;
+    spellTextElement.classList.add('spell-active');
+    setTimeout(() => {
+        spellTextElement.classList.remove('spell-active');
+    }, 1500); 
+  }
+
+
+  async function sendFrameToHands() {
+    if (video.readyState >= 2) { 
+      await hands.send({ image: video });
+    }
+    requestAnimationFrame(sendFrameToHands);
+  }
+
+  // 🚀 兼容性修复后的启动逻辑
   document.getElementById("startBtn").onclick = async () => {
     try {
-      await cameraMp.start();
-      document.getElementById("startBtn").style.display = "none";
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          // 移除 facingMode，让浏览器自动选择摄像头，提高兼容性
+          width: 640,
+          height: 480
+        }
+      });
+      
+      video.srcObject = stream;
+      
+      video.onloadeddata = () => {
+          video.play();
+          document.getElementById("startBtn").style.display = "none";
+          sendFrameToHands(); 
+      };
+      
     } catch (e) {
-      alert("摄像头启动失败：" + e.message);
+      alert("摄像头启动失败！请检查系统权限或重启浏览器。\n错误信息：" + e.message + 
+            "\n提示：确保摄像头未被其他应用占用，且浏览器拥有摄像头权限。");
     }
   };
 </script>
